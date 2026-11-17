@@ -74,14 +74,14 @@ jobs:
           $stage = "build\material-stage"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
-          # 取物料仓指定 tag 的 Release 附件列表
-          $rel = gh release view "v$env:MATERIAL_VERSION" --repo $env:MATERIAL_REPO --json tagName,assets | ConvertFrom-Json
-          if (-not $rel) { throw "物料仓 $env:MATERIAL_REPO 找不到 tag v$env:MATERIAL_VERSION" }
+          # 取物料仓指定 tag 的 Release 附件（物料 tag 形如 rpa-matrix-1.0.0，不带 v 前缀）
+          $rel = gh release view "$env:MATERIAL_VERSION" --repo $env:MATERIAL_REPO --json tagName,assets | ConvertFrom-Json
+          if (-not $rel) { throw "物料仓 $env:MATERIAL_REPO 找不到 tag $env:MATERIAL_VERSION" }
 
           $zipAsset = $rel.assets | Where-Object { $_.name -like "material-*.zip" } | Select-Object -First 1
           if (-not $zipAsset) { throw "物料 Release 中没有 material-*.zip 附件" }
 
-          gh release download "v$env:MATERIAL_VERSION" --repo $env:MATERIAL_REPO `
+          gh release download "$env:MATERIAL_VERSION" --repo $env:MATERIAL_REPO `
             --pattern $zipAsset.name --dir $stage --clobber
 
           Expand-Archive -LiteralPath (Join-Path $stage $zipAsset.name) -DestinationPath $stage -Force
