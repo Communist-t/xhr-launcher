@@ -1,0 +1,80 @@
+# ============================================================
+# 物料仓流水线（独立仓库 xhr-materials）
+#
+# 作用：把便携 Python 运行时（apps/WeChatRPA）与 Electron 目录（appr/matrixmedia）
+#       打成独立物料包，按 tag 发布为 Release 附件，供主仓流水线按版本拉取。
+#
+# 触发：
+#   - 打 tag  rpa-matrix-*  → 打包并发布物料 Release；
+#   - 推送 main             → 只打包校验，产物存 artifact。
+#
+# 仓库内目录约定：
+#   apps/WeChatRPA/...   微信 RPA 运行时
+#   appr/matrixmedia/... 矩阵工具 Electron 目录
+#   build/material-manifest.json  排除规则与清单结构（随物料仓一起维护）
+# ============================================================
+
+name: build-material
+
+on:
+  push:
+    tags: ["rpa-matrix-*"]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      material_version:
+        description: "物料版本号（留空则用 tag 名或 version.json）"
+        required: false
+        default: ""
+
+jobs:
+  pack:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - name: 检出物料仓
+        uses: actions/checkout@v4
+
+      - name: 确定物料版本
+        id: ver
+        shell: pwsh
+        run: |
+          $material = '${{ github.event.inputs.material_version }}'
+          if ([string]::IsNullOrWhiteSpace($material)) {
+            if ("${{ github.ref_type }}" -eq "tag") { $material = "${{ github.ref_name }}" }
+            else {
+              $v = Get-Content build\version.json -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json
+              $material = if ($v) { $v.runtime_material_version } else { "dev" }
+            }
+          }
+          # 去掉可能的 v 前缀，保持附件名与 tag 一致
+          $material = $material.TrimStart("v")
+          "material=$material" >> $env:GITHUB_OUTPUT
+          Write-Host "物料版本=$material"
+
+      - name: 打包物料
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File scripts\pack-material.ps1 -MaterialVersion "${{ steps.ver.outputs.material }}"
+
+      - name: 上传物料产物（分支校验用）
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: material_${{ steps.ver.outputs.material }}
+          path: |
+            build/material-*.zip
+            build/material-*.manifest.json
+          retention-days: 7
+
+      - name: 发布物料 Release（打 tag 时）
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            build/material-*.zip
+            build/material-*.manifest.json
+          fail_on_unmatched_files: true
+          generate_release_notes: true

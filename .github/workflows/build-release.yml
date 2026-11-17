@@ -1,0 +1,115 @@
+# ============================================================
+# x.HR Launcher 打包发版流水线
+#
+# 双仓物料方案：
+#   - 本仓（主仓）：只放 WPF 源码 / Assets / 工程文件 / 配置骨架；
+#   - 物料仓：按 Release tag（= runtime_material_version）发布物料 zip + manifest。
+#
+# 触发：
+#   - 打 tag  v*.*.*  → 出正式 Release，绿色免安装包挂到本仓 Release；
+#   - 推送到 main     → 只做构建校验，产物存为 Actions artifact，不发 Release。
+#
+# 物料仓地址与版本由仓库变量 / 密钥提供：
+#   变量  MATERIAL_REPO   ：物料仓，格式 owner/material-repo（默认见下文）
+#   密钥  MATERIAL_TOKEN ：读取物料仓的 PAT（物料仓公开时可用默认 GITHUB_TOKEN，私有仓必须 PAT）
+# ============================================================
+
+name: build-release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      material_version:
+        description: "覆盖物料版本（留空取 build/version.json）"
+        required: false
+        default: ""
+
+env:
+  DOTNET_NOLOGO: "true"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  # 物料仓（可在仓库 Settings → Variables 覆盖）
+  MATERIAL_REPO_OWNER_REPO: "${{ vars.MATERIAL_REPO || 'Communist-t/xhr-materials' }}"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write      # 写 Release 附件
+      actions: write        # 上传构建 artifact
+    steps:
+      - name: 检出主仓源码
+        uses: actions/checkout@v4
+
+      - name: 读取版本信息
+        id: ver
+        shell: pwsh
+        run: |
+          $v = Get-Content build\version.json -Raw | ConvertFrom-Json
+          $launcher = $v.launcher_version
+          $material = '${{ github.event.inputs.material_version }}'
+          if ([string]::IsNullOrWhiteSpace($material)) { $material = $v.runtime_material_version }
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $launcher = "${{ github.ref_name }}".TrimStart("v")
+          }
+          "launcher=$launcher" >> $env:GITHUB_OUTPUT
+          "material=$material" >> $env:GITHUB_OUTPUT
+          Write-Host "Launcher=$launcher 物料=$material"
+
+      - name: 安装 .NET 9 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: 下载匹配版本物料
+        shell: pwsh
+        env:
+          GH_TOKEN: "${{ secrets.MATERIAL_TOKEN || secrets.GITHUB_TOKEN }}"
+          MATERIAL_REPO: "${{ env.MATERIAL_REPO_OWNER_REPO }}"
+          MATERIAL_VERSION: "${{ steps.ver.outputs.material }}"
+        run: |
+          $ErrorActionPreference = "Stop"
+          $stage = "build\material-stage"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+
+          # 取物料仓指定 tag 的 Release 附件列表
+          $rel = gh release view "v$env:MATERIAL_VERSION" --repo $env:MATERIAL_REPO --json tagName,assets | ConvertFrom-Json
+          if (-not $rel) { throw "物料仓 $env:MATERIAL_REPO 找不到 tag v$env:MATERIAL_VERSION" }
+
+          $zipAsset = $rel.assets | Where-Object { $_.name -like "material-*.zip" } | Select-Object -First 1
+          if (-not $zipAsset) { throw "物料 Release 中没有 material-*.zip 附件" }
+
+          gh release download "v$env:MATERIAL_VERSION" --repo $env:MATERIAL_REPO `
+            --pattern $zipAsset.name --dir $stage --clobber
+
+          Expand-Archive -LiteralPath (Join-Path $stage $zipAsset.name) -DestinationPath $stage -Force
+          Remove-Item -LiteralPath (Join-Path $stage $zipAsset.name) -Force
+          Write-Host "物料已解压到 $stage"
+          Get-ChildItem $stage | Select-Object Name
+
+      - name: 发布打包
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File scripts\publish.ps1 `
+            -MaterialDir build\material-stage `
+            -Version "${{ steps.ver.outputs.launcher }}"
+
+      - name: 上传构建产物（分支校验用）
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: x.HR_${{ steps.ver.outputs.launcher }}_win-x64
+          path: dist/*.zip
+          retention-days: 7
+
+      - name: 发布正式 Release（打 tag 时）
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.zip
+            dist/*.sha256
+          fail_on_unmatched_files: true
+          generate_release_notes: true
