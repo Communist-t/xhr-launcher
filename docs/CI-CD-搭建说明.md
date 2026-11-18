@@ -5,35 +5,36 @@
 | 仓库 | 内容 | 不进仓库的东西 |
 |---|---|---|
 | **主仓**（本仓，源码仓） | WPF 源码、`Assets`、工程文件、`scripts/`、`.github/workflows/`、`build/` 版本与清单骨架 | 运行时物料、构建产物、个人状态、密钥 |
-| **物料仓**（独立制品仓） | `apps/WeChatRPA`（Python 运行时 + 业务脚本）、`appr/matrixmedia`（Electron 目录）、打包脚本与清单 | 日志、截图、记忆、事件、缓存、探针脚本、个人状态 |
+| **物料仓**（独立制品仓） | 打包脚本、`build/version.json`、`material-manifest.json`、README、校验工作流；**物料二进制不入库**，打成 zip 挂到物料 Release 附件 | 物料本体（apps/appr）、日志、截图、记忆、事件、缓存、探针脚本、个人状态 |
 
-主仓流水线按 `build/version.json` 里的 `runtime_material_version` 去物料仓拉对应版本的物料 zip，再 `dotnet publish` 出绿色免安装包。
+主仓流水线按 `build/version.json` 里的 `runtime_material_version` 去物料仓对应 Release 拉取物料 zip，再 `dotnet publish` 出绿色免安装包。
 
 ## 二、目录与关键文件
 
 ```
 Launcher/                        主仓
 ├── .github/workflows/
-│   ├── build-release.yml         主仓：拉物料 → publish → 出包 → 发 Release
-│   └── build-material.yml        物料仓：打包物料 → 发物料 Release
+│   └── build-release.yml         主仓：拉物料 → publish → 出包 → 发 Release
 ├── build/
 │   ├── version.json              launcher_version / runtime_material_version
 │   └── material-manifest.json    物料内容与排除规则
 ├── scripts/
 │   ├── publish.ps1               本机/CI 一键发布
-│   └── pack-material.ps1         物料打包
+│   ├── pack-material.ps1         物料打包
+│   └── download-material-local.ps1  本机绕过 DNS 污染下载物料附件
 ├── Services/ Models/ ViewModels/ Views/ Converters/ Assets/ ...
 └── Launcher.csproj
 ```
 
-物料仓内目录（与主仓发布槽位保持一致）：
+物料仓内目录（Git 内只有骨架，本体走 Release 附件）：
 
 ```
 xhr-materials/
-├── apps/WeChatRPA/...
-├── appr/matrixmedia/...
+├── build/version.json
 ├── build/material-manifest.json
-└── scripts/pack-material.ps1
+├── scripts/pack-material.ps1
+├── .github/workflows/material-check.yml  骨架完整性校验
+└── README.md
 ```
 
 ## 三、本地先跑通（已验证）
@@ -103,7 +104,43 @@ git push origin v0.1.0
 - 物料 tag：`rpa-matrix-1.0.0` → `runtime_material_version=rpa-matrix-1.0.0`
 - 主仓 `build/version.json` 的物料版本要与物料仓最新 tag 一致；子程序升级时单独给物料仓打新 tag，再回主仓更新该版本号。
 
-## 七、上线前必须处理的安全事项
+## 七、本机下载 GitHub Release 附件（DNS 污染排查）
+
+### 现象
+
+本机直连下载物料/产物附件时卡在 302 之后：`github.com`、`api.github.com`、`objects.githubusercontent.com` 可达，但 `release-assets.githubusercontent.com` 被本机 DNS 解析到 `127.0.0.1`/`::1`，对象存储 443 不通；`codeload.github.com` 也被解析到错误的 `57.155.x.x`。CI 在海外网络不受影响（云端下载物料步骤已 success）。
+
+### 已实测结论（2026-11-18）
+
+- 真实 IP 可通过 DoH 获取：`https://dns.alidns.com/resolve?name=<域名>&type=A`（Accept: `application/dns-json`）。
+- 当前可达：`github.com → 20.247.166.64`；`release-assets → 185.199.108–111.133`；`api.github.com → 20.205.243.168`。
+- 直连跨境带宽受限：单连接 7–66 KB/s，4 连接并行约 89 KB/s；公共镜像 `ghfast.top` 单连接约 70 KB/s，并发会被限流。大文件本机下载仍偏慢，正式分发应走对象存储/自有下载页。
+
+### 本机下载脚本
+
+`scripts/download-material-local.ps1`：先直连绑定可达 IP 取签名地址下载，失败回退加速镜像，最后经 API 取 asset `digest` 校验 SHA256 与大小。
+
+```powershell
+# 默认读 build/version.json 的物料版本，解压到 build\material-stage
+pwsh -File scripts\download-material-local.ps1
+
+# 指定版本 / 目录 / 强制走镜像
+pwsh -File scripts\download-material-local.ps1 -MaterialVersion rpa-matrix-1.0.0 -OutDir build\material-stage
+pwsh -File scripts\download-material-local.ps1 -UseMirrorOnly
+```
+
+### 可选：写 hosts 固化 IP（需管理员）
+
+脚本用 `--resolve` 临时绑定 IP，不改系统；若要永久生效，可在 `C:\Windows\System32\drivers\etc\hosts` 追加（管理员权限，改前备份）：
+
+```
+20.247.166.64 github.com
+185.199.111.133 release-assets.githubusercontent.com
+```
+
+IP 会随时间变化，失效后用 DoH 重新解析更新；代理软件（Clash/Mihomo）开启系统代理或 TUN 模式也可绕过 DNS 污染。
+
+## 八、上线前必须处理的安全事项
 
 1. **吊销已泄露的 Key**：本地历史里出现过的 `7361c7b2-...` 要到后端作废重发；新 Key 不进仓库，登录后由启动器回写 `user_config.json`。
 2. **公开仓会暴露**后端域名、接口路径、WPF 源码与聊天 SOP 结构；`chat_strategy_config.json`、`my_contacts.json` 已在排除清单中，不得再提交。
