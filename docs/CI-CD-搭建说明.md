@@ -140,6 +140,27 @@ pwsh -File scripts\download-material-local.ps1 -UseMirrorOnly
 
 IP 会随时间变化，失效后用 DoH 重新解析更新；代理软件（Clash/Mihomo）开启系统代理或 TUN 模式也可绕过 DNS 污染。
 
+### git push 在本机被 DNS 卡住时
+
+git 走 HTTPS 不支持 `--resolve`，可用「临时把 remote 切到可达 IP」的方式推送（推送后立即还原）：
+
+```powershell
+# 取凭据库里的 PAT（不要回显）
+$input = "protocol=https`nhost=github.com`n`n"
+$cred  = $input | git credential fill
+$token = ($cred | Where-Object { $_ -like "password=*" }) -replace "password=", ""
+$orig  = git remote get-url origin
+
+# 切到可达 IP（IP 会漂移，先按上面 DoH 解析测通再用）
+git remote set-url origin "https://Communist-t:$token@20.247.166.64/Communist-t/xhr-launcher.git"
+git -c http.sslVerify=false -c http.extraHeader="Host: github.com" push origin main
+
+# 还原标准 URL
+git remote set-url origin $orig
+```
+
+> `http.sslVerify=false` 仅用于 IP 直连绕过证书主机名校验；正式环境走标准域名不要关闭校验。公共镜像（ghfast.top 等）只代理拉取，不代理带凭据的 push。
+
 ## 八、上线前必须处理的安全事项
 
 1. **吊销已泄露的 Key**：本地历史里出现过的 `7361c7b2-...` 要到后端作废重发；新 Key 不进仓库，登录后由启动器回写 `user_config.json`。
