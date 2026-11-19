@@ -177,22 +177,24 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $owner, $repo = $env:GITEE_REPO -split '/'
-          $headers = @{ Authorization = "token $env:GITEE_TOKEN" }
 
           Get-ChildItem dist\xHR_*.zip, dist\latest.json, dist\*.sha256 -File | ForEach-Object {
             $file = $_.FullName
             Write-Host "上传 $($_.Name) 到 Gitee Release $env:RELEASE_ID"
-            $form = @{
-              file    = Get-Item $file
-              name    = $_.Name
-            }
-            Invoke-RestMethod -Headers $headers -Form $form `
-              -Uri "https://gitee.com/api/v5/repos/$owner/$repo/releases/$env:RELEASE_ID/assets" -Method Post | Out-Null
+            # Gitee 附件端点为 /attach_files；令牌走 query 参数 access_token（Authorization 头不被该端点识别）
+            $uploadUrl = "https://gitee.com/api/v5/repos/$owner/$repo/releases/$env:RELEASE_ID/attach_files?access_token=$env:GITEE_TOKEN"
+            $form = @{ file = Get-Item $file }
+            Invoke-RestMethod -Form $form -Uri $uploadUrl -Method Post | Out-Null
           }
 
       - name: 回填后的 latest.json 补挂到 GitHub Release
         if: github.ref_type == 'tag' && env.GITEE_REPO != ''
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/latest.json
-          fail_on_unmatched_files: false
+        shell: pwsh
+        env:
+          GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+        run: |
+          $ErrorActionPreference = "Stop"
+          $latest = Get-Content dist\latest.json -Raw | ConvertFrom-Json
+          Write-Host "回填后 package_url = $($latest.package_url)"
+          # 用 gh CLI 把回填后的 latest.json 覆盖挂到 GitHub Release（softprops 同名附件不会覆盖，需先删后传）
+          gh release upload "${{ github.ref_name }}" dist/latest.json --repo "${{ github.repository }}" --clobber
