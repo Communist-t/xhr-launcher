@@ -11,6 +11,9 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
+        // 清理上一轮未完成的更新暂存目录，避免残留旧包占用空间。
+        try { Services.UpdateService.CleanupStagingStatic(); } catch { }
+
         var sessionStore = new SessionStore();
         var session = sessionStore.Load();
 

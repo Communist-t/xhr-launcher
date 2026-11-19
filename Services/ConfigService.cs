@@ -12,6 +12,10 @@ public class LauncherConfig
     /// <summary>后端 API 地址，如 http://127.0.0.1:8080</summary>
     public string ApiBaseUrl { get; set; } = "http://127.0.0.1:8080";
 
+    /// <summary>更新清单地址（latest.json 直链）；留空则用 {ApiBaseUrl}/api/launcher/latest。
+    /// 发版后由 Gitee Release 附件提供，形如 https://gitee.com/&lt;owner&gt;/&lt;repo&gt;/releases/download/&lt;tag&gt;/latest.json。</summary>
+    public string UpdateManifestUrl { get; set; } = "";
+
     public List<MountedApp> Apps { get; set; } = new();
 }
 

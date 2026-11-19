@@ -483,7 +483,7 @@
                                     <TextBlock Grid.Column="0" Text="版本" FontSize="12" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center"/>
                                     <TextBlock Grid.Column="1" Text="{Binding Version}" FontSize="13" Foreground="{StaticResource FgBrush}"/>
                                 </Grid>
-                                <Grid>
+                                <Grid Margin="0,0,0,12">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="110"/>
                                         <ColumnDefinition Width="*"/>
@@ -491,6 +491,23 @@
                                     <TextBlock Grid.Column="0" Text="服务地址" FontSize="12" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center"/>
                                     <TextBlock Grid.Column="1" Text="{Binding ApiBaseUrl}" FontSize="13" Foreground="{StaticResource FgBrush}"/>
                                 </Grid>
+
+                                <!-- 自动更新区块 -->
+                                <StackPanel Margin="0,4,0,0">
+                                    <TextBlock Text="{Binding UpdateStatusText}" FontSize="12" Foreground="{StaticResource MutedBrush}"
+                                               TextWrapping="Wrap" Margin="0,0,0,8"
+                                               Visibility="{Binding UpdateStatusText, Converter={StaticResource StringToVis}}"/>
+                                    <ProgressBar Height="4" Minimum="0" Maximum="100" Value="{Binding UpdateProgress}"
+                                                  Visibility="{Binding IsUpdateBusy, Converter={StaticResource BoolToVis}}"
+                                                  Margin="0,0,0,8"/>
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
+                                        <Button Style="{StaticResource GhostButton}" Content="检查更新" Padding="16,8" Margin="0,0,8,0"
+                                                Command="{Binding CheckForUpdateCommand}" IsEnabled="{Binding IsUpdateBusy, Converter={StaticResource InverseBool}}"/>
+                                        <Button Style="{StaticResource PrimaryButton}" Content="立即更新" Padding="16,8"
+                                                Command="{Binding InstallUpdateCommand}"
+                                                IsEnabled="{Binding HasUpdateAvailable}"/>
+                                    </StackPanel>
+                                </StackPanel>
                             </StackPanel>
                         </Border>
 
@@ -635,6 +652,46 @@
                                 Command="{Binding CloseLaunchConfirmCommand}"/>
                         <Button Grid.Column="1" Style="{StaticResource PrimaryButton}" Content="确认启动" Margin="10,0,0,0"
                                 Command="{Binding ConfirmLaunchCommand}"/>
+                    </Grid>
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <!-- ===== 推荐更新弹窗：检测到新版本即弹出，可稍后再说，不强制拦截 ===== -->
+        <Grid Grid.ColumnSpan="2" Visibility="{Binding IsUpdatePromptOpen, Converter={StaticResource BoolToVis}}"
+              Background="#80000000" ZIndex="110">
+            <Border Background="{StaticResource CardBrush}" CornerRadius="18" Padding="24" Width="380"
+                    VerticalAlignment="Center" HorizontalAlignment="Center">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="24" ShadowDepth="2" Opacity="0.16" Color="#000000"/>
+                </Border.Effect>
+                <StackPanel>
+
+                    <!-- 标题栏 -->
+                    <Grid Margin="0,0,0,16">
+                        <TextBlock Text="发现新版本" FontSize="16" FontWeight="SemiBold" Foreground="{StaticResource FgBrush}"/>
+                        <Button Content="✕" Width="28" Height="28" Cursor="Hand"
+                                Foreground="{StaticResource MutedBrush}" Background="Transparent" BorderThickness="0"
+                                HorizontalAlignment="Right" Command="{Binding DismissUpdatePromptCommand}"/>
+                    </Grid>
+
+                    <!-- 版本与说明 -->
+                    <TextBlock FontSize="13" Foreground="{StaticResource FgBrush}" TextWrapping="Wrap" Margin="0,0,0,6">
+                        <Run Text="新版本"/><Run Text="{Binding UpdateTargetVersion}"/>
+                    </TextBlock>
+                    <TextBlock Text="{Binding UpdateStatusText}" FontSize="12" Foreground="{StaticResource MutedBrush}"
+                               TextWrapping="Wrap" Margin="0,0,0,20"/>
+
+                    <!-- 操作按钮 -->
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Button Grid.Column="0" Style="{StaticResource GhostButton}" Content="稍后再说" Margin="0,0,10,0"
+                                Command="{Binding DismissUpdatePromptCommand}"/>
+                        <Button Grid.Column="1" Style="{StaticResource PrimaryButton}" Content="立即更新" Margin="10,0,0,0"
+                                Command="{Binding InstallUpdateFromPromptCommand}"/>
                     </Grid>
                 </StackPanel>
             </Border>

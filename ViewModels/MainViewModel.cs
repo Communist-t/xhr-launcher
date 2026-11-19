@@ -39,8 +39,44 @@ public partial class MainViewModel : ObservableObject
     public string ReferralCode { get; }
     public string ApiKeyDisplay { get; }
     public string ApiBaseUrl { get; }
-    public string Version { get; } = "v0.1.0";
+    public string Version { get; } =
+        string.IsNullOrWhiteSpace(UpdateService.ReadPackagedVersion())
+            ? UpdateService.CurrentVersionLabel
+            : "v" + UpdateService.ReadPackagedVersion()!.TrimStart('v', 'V');
     public int AppCount => Apps.Count;
+
+    // ===== 自动更新状态字段 =====
+
+    /// <summary>更新流程是否正在进行（检查/下载/替换），禁用重复操作。</summary>
+    [ObservableProperty]
+    private bool _isUpdateBusy;
+
+    /// <summary>更新状态提示文案（版本说明、下载进度、错误信息）。</summary>
+    [ObservableProperty]
+    private string _updateStatusText = "";
+
+    /// <summary>是否存在可安装的新版本。</summary>
+    [ObservableProperty]
+    private bool _hasUpdateAvailable;
+
+    /// <summary>远端新版本号（有更新时展示）。</summary>
+    [ObservableProperty]
+    private string _updateTargetVersion = "";
+
+    /// <summary>更新进度 0–100。</summary>
+    [ObservableProperty]
+    private double _updateProgress;
+
+    /// <summary>本次更新是否由后端标记为强制（当前仅展示，不拦截使用）。</summary>
+    [ObservableProperty]
+    private bool _updateMandatory;
+
+    /// <summary>更新推荐弹窗是否可见：每次启动检测到新版本即弹出，用户可稍后再说。</summary>
+    [ObservableProperty]
+    private bool _isUpdatePromptOpen;
+
+    private UpdateInfo? _pendingUpdate;
+    private UpdateService? _updateService;
 
     public bool IsProgramsActive => CurrentPage == AppPage.Programs;
     public bool IsMarketplaceActive => CurrentPage == AppPage.Marketplace;
@@ -194,6 +230,9 @@ public partial class MainViewModel : ObservableObject
         _ = RefreshBalanceAsync();
         _ = RefreshMySkillsAsync();
         StartBalanceTimer();
+
+        // 启动时静默检查一次更新；失败不阻断主流程。
+        _ = CheckUpdateOnStartupAsync();
     }
 
     /// <summary>启动余额自动刷新定时器（3 秒一次）。</summary>
@@ -291,6 +330,125 @@ public partial class MainViewModel : ObservableObject
                     $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] RefreshMySkillsAsync 失败: {ex}\r\n");
             }
             catch { /* 忽略日志写入失败 */ }
+        }
+    }
+
+    // ===== 自动更新 =====
+
+    private UpdateService CreateUpdateService() =>
+        new(_config.Config.ApiBaseUrl, string.IsNullOrWhiteSpace(_config.Config.UpdateManifestUrl)
+            ? null
+            : _config.Config.UpdateManifestUrl);
+
+    /// <summary>启动时静默检查更新：有更新则回填提示，不自动下载。</summary>
+    private async Task CheckUpdateOnStartupAsync()
+    {
+        try
+        {
+            _updateService = CreateUpdateService();
+            var info = await _updateService.CheckForUpdateAsync();
+            if (info is null) return;
+
+            _pendingUpdate = info;
+            HasUpdateAvailable = true;
+            UpdateTargetVersion = "v" + info.LauncherVersion;
+            UpdateMandatory = info.Mandatory;
+            UpdateStatusText = string.IsNullOrWhiteSpace(info.ReleaseNotes)
+                ? $"发现新版本 {UpdateTargetVersion}"
+                : $"发现新版本 {UpdateTargetVersion}：{info.ReleaseNotes}";
+
+            // 推荐更新：每次启动检测到新版本即弹窗提示，可稍后再说，不强制拦截。
+            IsUpdatePromptOpen = true;
+        }
+        catch
+        {
+            // 更新检查不可用时静默忽略，保留本地版本展示
+        }
+    }
+
+    /// <summary>手动点击"检查更新"：重新拉取远端清单比对。</summary>
+    [RelayCommand]
+    private async Task CheckForUpdateAsync()
+    {
+        if (IsUpdateBusy) return;
+        IsUpdateBusy = true;
+        UpdateStatusText = "正在检查更新…";
+        try
+        {
+            _updateService ??= CreateUpdateService();
+            var info = await _updateService.CheckForUpdateAsync();
+            if (info is null)
+            {
+                HasUpdateAvailable = false;
+                UpdateStatusText = "当前已是最新版本";
+                return;
+            }
+
+            _pendingUpdate = info;
+            HasUpdateAvailable = true;
+            UpdateTargetVersion = "v" + info.LauncherVersion;
+            UpdateMandatory = info.Mandatory;
+            UpdateStatusText = string.IsNullOrWhiteSpace(info.ReleaseNotes)
+                ? $"发现新版本 {UpdateTargetVersion}"
+                : $"发现新版本 {UpdateTargetVersion}：{info.ReleaseNotes}";
+            IsUpdatePromptOpen = true;
+        }
+        catch (Exception ex)
+        {
+            UpdateStatusText = $"检查更新失败：{ex.Message}";
+        }
+        finally
+        {
+            IsUpdateBusy = false;
+        }
+    }
+
+    /// <summary>关闭推荐更新弹窗（稍后再说），不影响继续使用；下次重启仍会提示。</summary>
+    [RelayCommand]
+    private void DismissUpdatePrompt() => IsUpdatePromptOpen = false;
+
+    /// <summary>从推荐弹窗直接进入下载安装流程。</summary>
+    [RelayCommand]
+    private async Task InstallUpdateFromPromptAsync()
+    {
+        IsUpdatePromptOpen = false;
+        await InstallUpdateAsync();
+    }
+
+    /// <summary>下载并安装更新：下载 → 校验 → 暂存 → 拉起 helper 退出覆盖重启。</summary>
+    [RelayCommand]
+    private async Task InstallUpdateAsync()
+    {
+        if (IsUpdateBusy || _pendingUpdate is null) return;
+        IsUpdateBusy = true;
+        UpdateProgress = 0;
+        try
+        {
+            _updateService ??= CreateUpdateService();
+            UpdateStatusText = "正在下载更新包…";
+
+            var progress = new Progress<(long Received, long Total)>(p =>
+            {
+                UpdateProgress = p.Total > 0 ? Math.Round(100.0 * p.Received / p.Total, 1) : 0;
+                UpdateStatusText = $"正在下载更新包… {UpdateProgress:0.#}%";
+            });
+
+            var zipPath = await _updateService.DownloadPackageAsync(_pendingUpdate, progress);
+            UpdateStatusText = "正在解压更新包…";
+            var stageDir = _updateService.StagePackage(zipPath, _pendingUpdate.LauncherVersion);
+
+            UpdateStatusText = "更新已就绪，即将退出并重启…";
+            // 启动 helper：主进程退出后覆盖程序目录并重启。
+            _updateService.ApplyUpdateAndRestart(stageDir, _pendingUpdate);
+
+            // 触发主窗口关闭；子程序由 JobObject 兜底回收。
+            Shutdown();
+            System.Windows.Application.Current.Shutdown(0);
+        }
+        catch (Exception ex)
+        {
+            UpdateStatusText = $"更新失败：{ex.Message}";
+            IsUpdateBusy = false;
         }
     }
 

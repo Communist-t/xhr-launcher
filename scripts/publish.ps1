@@ -8,8 +8,8 @@
     2) 不传 -MaterialDir：回退使用源码树内的 apps\、appr\（仅本机联调用，公开仓里这两目录已被 .gitignore 排除）。
 
   产物输出到 dist\：
-    x.HR_<版本>_win-x64.zip
-    x.HR_<版本>_win-x64.zip.sha256
+    xHR_<版本>_win-x64.zip
+    xHR_<版本>_win-x64.zip.sha256
     release-manifest.json（版本、物料版本、文件清单与校验值）
 
 .PARAMETER MaterialDir
@@ -126,15 +126,22 @@ $manifest = [pscustomobject]@{
   files                  = $fileEntries
 }
 
+# ---- 5.1 把版本号文件拷进发布目录，供客户端读取本地版本做更新比对 ----
+$versionSrc = Join-Path $buildDir "version.json"
+if (Test-Path $versionSrc) {
+  Copy-Item -LiteralPath $versionSrc -Destination (Join-Path $publishOut "version.json") -Force
+}
+
 # ---- 6. 打 zip ----
 New-Item -ItemType Directory -Force -Path $distDir | Out-Null
-$zipName = "x.HR_" + $Version + "_" + $rid + ".zip"
+$zipName = "xHR_" + $Version + "_" + $rid + ".zip"
 $zipOut = Join-Path $distDir $zipName
 if (Test-Path $zipOut) { Remove-Item -LiteralPath $zipOut -Force }
 Compress-Archive -Path (Join-Path $publishOut "*") -DestinationPath $zipOut -CompressionLevel Optimal
 
 $zipHash = (Get-FileHash -LiteralPath $zipOut -Algorithm SHA256).Hash.ToLower()
 $zipSizeMB = [math]::Round((Get-Item -LiteralPath $zipOut).Length / 1MB, 1)
+$zipSize = (Get-Item -LiteralPath $zipOut).Length
 
 # 校验清单：zip 自身哈希 + 包内文件清单
 $shaOut = "$zipOut.sha256"
@@ -142,6 +149,19 @@ $shaOut = "$zipOut.sha256"
 
 $manifestOut = Join-Path $distDir ("release-manifest_" + $Version + ".json")
 $manifest | ConvertTo-Json -Depth 8 | Out-File -LiteralPath $manifestOut -Encoding utf8
+
+# ---- 6.1 生成客户端更新清单 latest.json（包体直链地址由工作流按 Gitee 模板回填）----
+$updateInfo = [pscustomobject]@{
+  launcher_version          = $Version
+  package_url               = "__PACKAGE_URL__"
+  sha256                    = $zipHash
+  size                      = $zipSize
+  release_notes             = ""
+  mandatory                 = $false
+  runtime_material_version  = $materialVersion
+}
+$latestOut = Join-Path $distDir "latest.json"
+$updateInfo | ConvertTo-Json -Depth 4 | Out-File -LiteralPath $latestOut -Encoding utf8
 
 Write-Host ""
 Write-Host "=== 发布完成 ==="
